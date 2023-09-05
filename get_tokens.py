@@ -9,6 +9,17 @@ from sentence_transformers import SentenceTransformer
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+def sentence_generator(sentences):
+    for sentence in sentences:
+        yield sentence
+
+def check_limits(limit, current):
+    if current == limit:
+        status = True
+    else:
+        status = False
+    return status
+
 
 def get_tokens(
     file,
@@ -20,29 +31,46 @@ def get_tokens(
     """Get tokens from a jsonl file and save them to a .npz file with x number of arrays of tokens where x is the limit defined."""
 
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
+    # file should be formatted as a jsonl file with each line containing a json object with a "sentences" key containing a list of sentences
     with open(file, "r") as infile:
+        # setting the limit and page_id
         multiplier = 1000
+
+        # defing the output json which contains the two dictionaries, the first with the ID for the ouput page and the second with the ID for the array and the tokens
         output_json = {page_id: {}}
 
         for line in infile:
-            # outfile = f"tokens_{page_id}"
-
+            # loading the json object
             rawdata = json.loads(line)
+
+            # getting the list of sentences
             rawlines = rawdata["sentences"]
 
+            line_id = 0 # the id of the current line of the files used for surplus lines that don't reach the limit
+
+            # iterating through the sentences
             for raw_sentence in rawlines:
+                # getting the sentence and increasing the line id
+                line_id += 1
+
+                status = check_limits(len(rawlines), line_id)
+                
+                # increasing the array id and adding the sentence embeddings to the output json
                 array_id += 1
                 sentence_embeddings = model.encode(raw_sentence)
                 output_json[page_id][array_id] = np.array(sentence_embeddings)
 
-                while array_id > limit:
+
+                # setting a condition to save the tokens to a file if the limit is reached
+                while array_id > limit: # and status == True:
                     # temp limit to make sure it isn't changed if in the process of catching an error
                     check_limit = int(limit)
 
                     # catching errors in memory allocation in the case that the limit is too high
                     try:
-                        # saving the tokens to an npz file
+                        """The goal of this block is to see if the loading of the npz file will cause an error. 
+                        If it does, the limit is halved and the tokens are saved to two separate files. The limit is then increased by the multiplier."""
+                        # saving the tokens to an npz file with the page_id as the name and the array ID as keys
                         for page in output_json:
                             np.savez(f"tokens_{page_id}", **output_json[page])
 
@@ -58,18 +86,18 @@ def get_tokens(
                         print("Error in file: " + dir + "on line: " + line)
                         print("current limit: " + str(limit))
 
-                        # halving the limit
+                        # halving the multiplier for increasing the limit
                         multiplier = multiplier / 2
 
                         # defining the array ids for the two separate arrays
                         array_id_middle = check_limit - multiplier
                         array_id_lower = check_limit - multiplier * 2
 
-                        # instantiates two separate arrays witht half the data each to write to smaller files
+                        # instantiates two separate arrays with half the data each to write to smaller files
                         temp_1 = {
                             key: output_json[key]
                             for key in output_json[page_id]
-                            if array_id_lower <= key < array_id_middle
+                            if array_id_lower <= key < array_id_middle 
                         }
                         page_id += 1
                         np.savez(f"tokens_{page_id}", **temp_1)
@@ -78,8 +106,9 @@ def get_tokens(
                         temp_2 = {
                             key: output_json[key]
                             for key in output_json[page_id]
-                            if array_id_lower < key <= check_limit
+                            if array_id_middle <= key <= limit
                         }
+                        # 
                         page_id += 1
                         np.savez(f"tokens_{page_id}", **temp_2)
                         limit += multiplier
